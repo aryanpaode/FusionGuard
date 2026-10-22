@@ -1,0 +1,13 @@
+Flask>=3.0,<4.0
+mysql-connector-python
+opencv-python
+numpy
+mediapipe==0.10.21
+scipy
+scikit-image
+tensorflow
+Werkzeug
+pytest
+python-dotenv
+deepface==0.0.101
+tf-keras

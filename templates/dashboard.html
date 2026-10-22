@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FusionGuard V3.5 ArcFace Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+<header class="topbar">
+    <div class="brand">
+        <h1>FusionGuard V3.5 ArcFace</h1>
+        <p>Multimodal entrance recognition + liveness + incident response + guest access</p>
+    </div>
+    <nav class="topnav">
+        <a href="#monitor">Monitoring</a>
+        <a href="#enrolment">Enrolment</a>
+        <a href="#incidents">Incidents</a>
+        <a href="#guest-keys">Guest Keys</a>
+        <a href="#guest-history">Guest History</a>
+        <a href="{{ url_for('guest_access') }}" target="_blank">Guest Entry</a>
+        <a href="{{ url_for('logout') }}">Logout ({{ session.admin_username }})</a>
+    </nav>
+</header>
+
+<main class="container">
+    {% with messages = get_flashed_messages() %}
+        {% for message in messages %}<div class="flash">{{ message }}</div>{% endfor %}
+    {% endwith %}
+
+    <section class="metrics">
+        <div class="metric"><span>Active authorised users</span><strong>{{ metrics.active_users }}</strong></div>
+        <div class="metric"><span>Recognition sessions</span><strong>{{ metrics.sessions }}</strong></div>
+        <div class="metric"><span>Open incidents</span><strong id="open-incident-count">{{ metrics.open_incidents }}</strong></div>
+        <div class="metric"><span>Active guest keys</span><strong>{{ metrics.active_guest_keys }}</strong></div>
+        <div class="metric"><span>Guest uses today</span><strong>{{ metrics.guest_accesses_today }}</strong></div>
+        <div class="metric"><span>Rejected guest attempts</span><strong>{{ metrics.guest_rejections_today }}</strong></div>
+    </section>
+
+    <section class="grid-2">
+        <article class="card section-anchor" id="monitor">
+            <h2>Automatic Entrance Monitoring</h2>
+            <p class="subtext">A face must remain usable for about 2–3 seconds. FusionGuard then collects separate liveness frames and a {{ recognition_frame_count }}-frame recognition burst. One final session result is logged, followed by a {{ cooldown_seconds }}-second cooldown.</p>
+            <div class="badges">
+                <span class="badge">{{ fusion_weights }}</span>
+                <span class="badge">MD ceiling {{ max_mahalanobis }}</span>
+                <span class="badge">ArcFace cosine distance ≤ {{ arcface_distance_threshold }}</span>
+                <span class="badge">Frame margin {{ min_margin }} pts</span>
+                <span class="badge">Strict majority voting</span>
+                <span class="badge">Median winning-frame confidence</span>
+            </div>
+
+            <div class="video-shell">
+                <video id="monitor-camera" autoplay playsinline muted></video>
+                <canvas id="monitor-canvas" hidden></canvas>
+                <div class="video-overlay" id="monitor-status">Monitoring stopped.</div>
+            </div>
+
+            <div class="controls">
+                <button type="button" class="success" onclick="startMonitoring()">Start Monitoring</button>
+                <button type="button" id="resume-button" onclick="resumeNow()" disabled>Resume Now</button>
+                <button type="button" class="danger" onclick="stopMonitoring()">Stop Monitoring</button>
+            </div>
+
+            <div id="recognition-result" class="result-panel">
+                <div id="result-title" class="result-title"></div>
+                <div id="result-summary" class="subtext"></div>
+                <div class="score-grid">
+                    <div class="score"><span>Median ArcFace</span><strong id="r-arcface">—</strong></div>
+                    <div class="score"><span>Median Geometry</span><strong id="r-geometry">—</strong></div>
+                    <div class="score"><span>Median Mahalanobis</span><strong id="r-mahal">—</strong></div>
+                    <div class="score"><span>Median Iris/LBP</span><strong id="r-iris">—</strong></div>
+                    <div class="score"><span>Median Fusion</span><strong id="r-fusion">—</strong></div>
+                    <div class="score"><span>Median Confidence</span><strong id="r-confidence">—</strong></div>
+                    <div class="score"><span>Votes</span><strong id="r-votes">—</strong></div>
+                    <div class="score"><span>Common Best Angle</span><strong id="r-angle">—</strong></div>
+                </div>
+            </div>
+        </article>
+
+        <article class="card section-anchor" id="enrolment">
+            <h2>Four-View Authorised-User Enrolment</h2>
+            <p class="subtext">Capture Front, Slight Left, Slight Right and Slight Up. Quality is checked before each template is accepted.</p>
+            <form method="POST" action="{{ url_for('enrol') }}" id="enrol-form">
+                <div class="form-row">
+                    <div>
+                        <label for="name">Name</label>
+                        <input id="name" name="name" placeholder="Aryan Paode" required>
+                    </div>
+                    <div>
+                        <label for="role">Role</label>
+                        <input id="role" name="role" value="Authorised User" placeholder="Student / Faculty / Staff">
+                    </div>
+                </div>
+
+                <video id="enrol-camera" class="enrol-video" autoplay playsinline muted></video>
+                <canvas id="enrol-canvas" hidden></canvas>
+                <div class="controls">
+                    <button type="button" class="secondary" onclick="startEnrolCamera()">Start Enrolment Camera</button>
+                    <button type="button" class="danger" onclick="stopActiveCamera()">Stop Camera</button>
+                    <button type="submit">Save Enrolment</button>
+                </div>
+
+                <div class="angle-grid">
+                    {% for key, label in angle_fields.items() %}
+                    <div class="angle-card" id="{{ key }}-card">
+                        <h3>{{ label }}</h3>
+                        <img id="{{ key }}-preview" class="angle-preview" alt="{{ label }} preview">
+                        <input type="hidden" id="{{ key }}_image" name="{{ key }}_image">
+                        <button type="button" class="violet" onclick="captureEnrolment('{{ key }}')">Capture / Retake</button>
+                    </div>
+                    {% endfor %}
+                </div>
+            </form>
+        </article>
+    </section>
+
+    <section class="card">
+        <h2>Authorised Users</h2>
+        <p class="subtext">User-management requirement: enrolment samples stay linked to each account; an administrator can disable or re-enable access without deleting biometric evidence.</p>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>ID</th><th>Name</th><th>Role</th><th>Samples</th><th>Status</th><th>Enrolled</th><th>Action</th></tr></thead>
+                <tbody>
+                {% for user in users %}
+                    <tr>
+                        <td>{{ user.id }}</td><td>{{ user.name }}</td><td>{{ user.role }}</td><td>{{ user.sample_count }}</td>
+                        <td><span class="pill {{ 'green' if user.active else 'gray' }}">{{ 'Active' if user.active else 'Disabled' }}</span></td>
+                        <td>{{ user.created_at }}</td>
+                        <td>
+                            <form method="POST" action="{{ url_for('toggle_user', user_id=user.id) }}">
+                                <input type="hidden" name="active" value="{{ 0 if user.active else 1 }}">
+                                <button class="small {{ 'danger' if user.active else 'success' }}" type="submit">{{ 'Disable' if user.active else 'Enable' }}</button>
+                            </form>
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="7">No users enrolled yet.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="card section-anchor" id="incidents">
+        <h2>Incident Log & Evidence</h2>
+        <p class="subtext">New incidents appear automatically. The table stays compact; use <strong>View Details</strong> for recognition scores, frame-by-frame evidence and alerts. Status/review is retained only as an optional incident-classification control inside the detail window.</p>
+        <div class="incident-toolbar">
+            <div class="inline-form">
+                <label for="incident_status" style="margin:0;">Show</label>
+                <select id="incident_status">
+                    <option value="">All incidents</option>
+                    {% for value in ['open','investigating','reviewed','closed','false_alarm'] %}<option value="{{ value }}" {% if incident_filter == value %}selected{% endif %}>{{ value }}</option>{% endfor %}
+                </select>
+                <span id="incident-refresh-state" class="auto-refresh">Auto-refresh: 3 s</span>
+            </div>
+            <button id="delete-incidents-button" type="button" class="small danger" onclick="deleteSelectedIncidents()" disabled>Delete Selected Logs</button>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th><input id="incident-select-all" type="checkbox" aria-label="Select all incident logs"></th>
+                        <th>ID</th><th>Time</th><th>Decision</th><th>Candidate</th><th>Votes</th><th>Severity</th><th>Reason</th><th>Status</th><th>Details</th>
+                    </tr>
+                </thead>
+                <tbody id="incident-table-body">
+                {% for incident in incidents %}
+                    <tr>
+                        <td><input class="incident-select" type="checkbox" value="{{ incident.id }}" aria-label="Select incident {{ incident.id }}"></td>
+                        <td>#{{ incident.id }}</td><td>{{ incident.created_at }}</td>
+                        <td>{{ incident.session_decision or 'Guest / Other' }}</td>
+                        <td>{{ incident.best_candidate_name or '—' }}</td>
+                        <td>{% if incident.session_id %}{{ incident.winning_votes }}/{{ incident.required_votes }} of {{ incident.usable_frames }}{% else %}—{% endif %}</td>
+                        <td><span class="pill {{ 'red' if incident.severity == 'high' else 'amber' }}">{{ incident.severity }}</span></td>
+                        <td>{{ incident.reason }}</td>
+                        <td><span class="pill gray">{{ incident.status }}</span></td>
+                        <td><button type="button" class="small" onclick="openIncidentDetails({{ incident.id }})">View Details</button></td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="10">No incidents recorded.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <div id="incident-modal" class="modal-backdrop" hidden>
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="incident-modal-title">
+            <div class="modal-header">
+                <div>
+                    <h2 id="incident-modal-title">Incident Details</h2>
+                    <p id="incident-modal-subtitle" class="subtext"></p>
+                </div>
+                <button type="button" class="modal-close" onclick="closeIncidentDetails()" aria-label="Close incident details">×</button>
+            </div>
+            <div id="incident-detail-body"><p class="subtext">Loading…</p></div>
+            <details class="incident-review-box">
+                <summary>Optional: classify / close this incident</summary>
+                <div class="form-row">
+                    <div>
+                        <label for="detail-incident-status">Status</label>
+                        <select id="detail-incident-status">
+                            {% for value in ['open','investigating','reviewed','closed','false_alarm'] %}<option value="{{ value }}">{{ value }}</option>{% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label for="detail-incident-notes">Review note</label>
+                        <input id="detail-incident-notes" placeholder="Optional note">
+                    </div>
+                </div>
+                <button type="button" class="small" onclick="saveIncidentReview()">Save Classification</button>
+            </details>
+        </div>
+    </div>
+
+    <section class="grid-2 section-anchor" id="guest-keys">
+        <article class="card">
+            <h2>Create Temporary Guest Key</h2>
+            <p class="subtext">Keys are cryptographically random, exactly eight numeric digits, time-bound, usage-limited and stored only as hashes. The plaintext is shown once.</p>
+            {% if new_guest_key %}
+                <div class="secret-key">{{ new_guest_key }}</div>
+                <div class="warning">Copy this key now. FusionGuard stores the digest and last four digits, not the full plaintext key.</div>
+            {% endif %}
+            <form method="POST" action="{{ url_for('create_guest_key_route') }}">
+                <label>Guest name</label><input name="guest_name" required>
+                <div class="form-row">
+                    <div><label>Valid from</label><input type="datetime-local" name="valid_from" required></div>
+                    <div><label>Valid until</label><input type="datetime-local" name="valid_until" required></div>
+                </div>
+                <label>Maximum uses</label><input type="number" name="max_uses" min="1" max="20" value="1" required>
+                <button type="submit">Generate Random 8-Digit Key</button>
+            </form>
+        </article>
+
+        <article class="card">
+            <h2>Guest Key Register</h2>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>ID</th><th>Guest</th><th>Last 4</th><th>Window</th><th>Uses</th><th>Status</th><th></th></tr></thead>
+                    <tbody>
+                    {% for key in guest_keys %}
+                        <tr>
+                            <td>{{ key.id }}</td><td>{{ key.guest_name }}</td><td>••••{{ key.key_last4 }}</td>
+                            <td>{{ key.valid_from }}<br>to {{ key.valid_until }}</td><td>{{ key.uses }}/{{ key.max_uses }}</td>
+                            <td><span class="pill {{ 'red' if key.revoked else 'green' }}">{{ 'Revoked' if key.revoked else 'Issued' }}</span></td>
+                            <td>{% if not key.revoked %}<form method="POST" action="{{ url_for('revoke_guest_key_route', key_id=key.id) }}"><button type="submit" class="small danger">Revoke</button></form>{% endif %}</td>
+                        </tr>
+                    {% else %}<tr><td colspan="7">No guest keys created.</td></tr>{% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </article>
+    </section>
+
+    <section class="card section-anchor" id="guest-history">
+        <h2>Guest Access History</h2>
+        <p class="subtext">Successful guest-key uses are access events, not security incidents. Rejected, expired, revoked or exhausted guest-key attempts are logged here and also create a reviewable incident.</p>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Time</th><th>Guest</th><th>Key</th><th>Decision</th><th>Reason</th></tr></thead>
+                <tbody>
+                {% for access in guest_access_logs %}
+                    <tr>
+                        <td>{{ access.created_at }}</td>
+                        <td>{{ access.guest_name or 'Unknown' }}</td>
+                        <td>{% if access.provided_last4 %}••••{{ access.provided_last4 }}{% else %}—{% endif %}</td>
+                        <td><span class="pill {{ 'green' if access.decision == 'Guest Authorised' else 'red' }}">{{ access.decision }}</span></td>
+                        <td>{{ access.reason or '—' }}</td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="5">No guest-key attempts recorded yet.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="card">
+        <h2>Recognition History</h2>
+        <form method="GET" class="inline-form" style="margin-bottom:10px;">
+            <label style="margin:0;">Decision</label>
+            <select name="decision">
+                <option value="">All</option>
+                {% for value in ['Authorised','Unknown','Uncertain','Suspected Spoof'] %}<option value="{{ value }}" {% if decision_filter == value %}selected{% endif %}>{{ value }}</option>{% endfor %}
+            </select>
+            <label style="margin:0;">Candidate</label><input name="name" value="{{ name_filter }}" placeholder="Name contains...">
+            <button class="small" type="submit">Apply</button>
+        </form>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Session</th><th>Time</th><th>Decision</th><th>Candidate</th><th>Votes</th><th>Frames</th><th>Confidence</th><th>Fusion</th><th>Liveness</th><th>Evidence</th></tr></thead>
+                <tbody>
+                {% for item in sessions %}
+                    <tr>
+                        <td>#{{ item.id }}</td><td>{{ item.created_at }}</td>
+                        <td><span class="pill {% if item.decision == 'Authorised' %}green{% elif item.decision == 'Uncertain' %}amber{% else %}red{% endif %}">{{ item.decision }}</span></td>
+                        <td>{{ item.best_candidate_name or '—' }}</td><td>{{ item.winning_votes }}/{{ item.required_votes }}</td><td>{{ item.usable_frames }}</td>
+                        <td>{{ (item.median_confidence * 100)|round(2) }}%</td><td>{{ item.median_fusion_score }}%</td><td>{{ item.liveness_result }}</td>
+                        <td>{% if item.evidence_path %}<a href="{{ url_for('static', filename=static_path(item.evidence_path)) }}" target="_blank">Open</a>{% else %}—{% endif %}</td>
+                    </tr>
+                {% else %}<tr><td colspan="10">No recognition sessions yet.</td></tr>{% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="card">
+        <h2>Software Engineering A–E Integration Snapshot</h2>
+        <div class="badges">
+            <span class="badge">A: Requirements + Incremental architecture</span>
+            <span class="badge">B: 4-view enrolment + webcam + quality</span>
+            <span class="badge">C: MySQL users/templates/sessions/incidents/audit</span>
+            <span class="badge">D: Admin authentication + dashboard + access control</span>
+            <span class="badge">E: One-to-many + liveness + unknown rejection + alerts + tests</span>
+        </div>
+        <p class="subtext">See <code>docs/A_E_REQUIREMENTS_TRACEABILITY.md</code> in the ZIP for requirement-by-requirement mapping and <code>tests/</code> for executable logic checks.</p>
+    </section>
+</main>
+
+<script>
+window.FG_CONFIG = {
+    recognitionFrames: {{ recognition_frame_count }},
+    livenessFrames: {{ liveness_frame_count }},
+    stableProbeCount: {{ stable_probe_count }},
+    cooldownSeconds: {{ cooldown_seconds }}
+};
+</script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

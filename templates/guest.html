@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FusionGuard Guest Access</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body class="login-page">
+    <main class="login-card">
+        <h1>Guest Access</h1>
+        <p class="subtext">Enter the random eight-digit time-bound key supplied by the administrator.</p>
+        <form method="POST">
+            <label for="guest_key">8-digit guest key</label>
+            <input id="guest_key" name="guest_key" inputmode="numeric" maxlength="8" pattern="[0-9]{8}" placeholder="00000000" required>
+            <button type="submit">Verify Guest Key</button>
+        </form>
+        {% if result %}
+            <div class="result-panel show {{ 'authorised' if result.authorised else 'unknown' }}">
+                <div class="result-title">{{ 'Guest Authorised' if result.authorised else 'Guest Rejected' }}</div>
+                {% if result.guest_name %}<p><strong>{{ result.guest_name }}</strong></p>{% endif %}
+                {% if result.incident_id %}<p class="subtext">Security incident #{{ result.incident_id }} was recorded for this rejected attempt.</p>{% endif %}
+                <p>{{ result.reason }}</p>
+                {% if result.authorised %}<p>Remaining uses after this entry: {{ result.remaining_uses }}</p>{% endif %}
+            </div>
+        {% endif %}
+        <a class="button secondary" href="{{ url_for('login') }}">Administrator Login</a>
+    </main>
+</body>
+</html>
